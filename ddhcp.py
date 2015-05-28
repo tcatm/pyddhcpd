@@ -54,6 +54,7 @@ class DDHCP:
         self.own_blocks = dict()
 
     def dump_blocks(self):
+        return
         blocks = ""
 
         m = { BlockState.FREE:      ".",
