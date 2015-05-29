@@ -8,7 +8,7 @@ config = {
     "mcport": 1234,
 
     # Multicast Group
-    "mcgroup": "ff01::1234",
+    "mcgroup": "ff02::1234",
 
     # Interface for communication with other nodes
     "mcif": "veth1",
