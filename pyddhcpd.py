@@ -2,7 +2,7 @@
 
 from math import log
 from itertools import cycle
-from ipaddress import ip_network, ip_address, IPv4Address
+from ipaddress import IPv4Address
 import asyncio
 import binascii
 import struct
@@ -16,30 +16,13 @@ from ddhcp import DDHCP
 import dhcp
 import dhcpoptions
 
-# TODO config foo in Dateiauslagern (yaml)
+from config import config
+
 # TODO brauchen wir TENTATIVE überhaupt?
 # TODO Konfliktauflösug
 # TODO REQUEST forwarding
 # TODO block_index may be outside permittable range
 # TODO Split large packets automatically?
-
-MYPORT = 1234
-MYGROUP = 'ff02::1234'
-MYINTERFACE = 'veth1'
-MYCLIENTIF = 'client0'
-
-config = { "prefix": ip_network("10.0.0.0/27"), # used for blocks
-           "prefixlen": 20, # sent as subnet mask to the client
-           "blocksize": 4,
-           "blocked": list(range(0, 1)),
-           #"blocked": list(range(0, 64)),
-           "routers": [ip_address("10.0.0.1")],
-           "dns": [ip_address("10.130.0.255"), ip_address("10.130.0.254")],
-           "blocktimeout": 30, # leasetime for blocks
-           "tentativetimeout": 15,
-           "siaddr": IPv4Address("10.0.0.1"),
-           "leasetime": 3  # leasetime for client leases
-         }
 
 
 class Lease:
@@ -157,17 +140,6 @@ class DHCPProtocol:
         else:
             self.transport.sendto(msg.serialize(), addr)
 
-# eigene Blöcke durchsuchen, einen davon auswählen
-# freie IP suchen, als reserviert markieren
-# offer senden
-# bei request nachschauen und ack senden
-# leasetime vom client kann kürzer als die angebotene sein!
-# ParameterRequestList beachten!
-# ansonsten nak
-# dhcprelease auch noch handhaben
-
-
-
 
 def main():
     ddhcp = DDHCP(config)
@@ -184,7 +156,7 @@ def main():
 
     sock = transport.get_extra_info("socket")
 
-    sock.setsockopt(socket.SOL_SOCKET, IN.SO_BINDTODEVICE, bytes(MYCLIENTIF + '\0', "UTF-8"))
+    sock.setsockopt(socket.SOL_SOCKET, IN.SO_BINDTODEVICE, bytes(config["clientif"] + '\0', "UTF-8"))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -192,19 +164,19 @@ def main():
     # DDHCP Socket
 
     def ddhcp_factory():
-        return DDHCPProtocol(loop, (MYGROUP, MYPORT), ddhcp, config)
+        return DDHCPProtocol(loop, (config["mcgroup"], config["mcport"]), ddhcp, config)
 
-    listen = loop.create_datagram_endpoint(ddhcp_factory, family=socket.AF_INET6, local_addr=('::', MYPORT))
+    listen = loop.create_datagram_endpoint(ddhcp_factory, family=socket.AF_INET6, local_addr=('::', config["mcport"]))
     transport, protocol = loop.run_until_complete(listen)
 
     sock = transport.get_extra_info("socket")
 
-    ifn = socket.if_nametoindex(MYINTERFACE)
+    ifn = socket.if_nametoindex(config["mcif"])
     ifn = struct.pack("I", ifn)
     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, ifn)
 
     # Join group
-    group_bin = socket.inet_pton(socket.AF_INET6, MYGROUP)
+    group_bin = socket.inet_pton(socket.AF_INET6, config["mcgroup"])
     mreq = group_bin + ifn
     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 

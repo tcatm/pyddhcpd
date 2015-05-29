@@ -70,7 +70,6 @@ class DDHCP:
         raise KeyError("Address not managed by any block")
 
     def dump_blocks(self):
-        return
         blocks = ""
 
         m = { BlockState.FREE:      ".",
@@ -83,11 +82,12 @@ class DDHCP:
         for block in self.blocks:
             blocks += m[block.state]
 
-        import re
-#        for b in re.findall('.{0,80}', blocks):
-#            print(b)
-
         print("\nBlocks at", time.time())
+
+        import re
+        for b in re.findall('.{0,80}', blocks):
+            print(b)
+
         for block in self.blocks:
             print(block)
 
