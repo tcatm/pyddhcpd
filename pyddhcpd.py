@@ -4,6 +4,7 @@ from math import log
 from itertools import cycle
 from ipaddress import ip_network, ip_address, IPv4Address
 import asyncio
+import binascii
 import struct
 import socket, IN
 import time
@@ -15,33 +16,50 @@ from ddhcp import DDHCP
 import dhcp
 import dhcpoptions
 
-# Erstmal nur Blöcke verwalten. Testcase: alle paar Sekunden einen Block belegen und manchmal einen anderen freigeben
-# TODO dhcp options: subnet mask before router! (RFC 1533)
+# TODO config foo in Dateiauslagern (yaml)
+# TODO brauchen wir TENTATIVE überhaupt?
 # TODO Konfliktauflösug
-# TODO Übergang von DISPUTE zu OURS oder CLAIMED
-# TODO DHCP für Clients
-# TODO normalize case of functions
+# TODO REQUEST forwarding
 # TODO block_index may be outside permittable range
 # TODO Split large packets automatically?
-# TODO Python unit tests? zwei instanzen, die einen Konflikt haben?
 
 MYPORT = 1234
 MYGROUP = 'ff02::1234'
 MYINTERFACE = 'veth1'
 MYCLIENTIF = 'client0'
-MYCLIENTIP = '10.0.0.1'
 
-config = { "prefix": ip_network("10.0.0.0/27"),
-           "prefixlen": 24,
+config = { "prefix": ip_network("10.0.0.0/27"), # used for blocks
+           "prefixlen": 20, # sent as subnet mask to the client
            "blocksize": 4,
            "blocked": list(range(0, 1)),
            #"blocked": list(range(0, 64)),
-           "gateway": ip_address("10.0.0.1"),
+           "routers": [ip_address("10.0.0.1")],
            "dns": [ip_address("10.130.0.255"), ip_address("10.130.0.254")],
-           "domain": "ffhl",
-           "blocktimeout": 30,
-           "tentativetimeout": 15
+           "blocktimeout": 30, # leasetime for blocks
+           "tentativetimeout": 15,
+           "siaddr": IPv4Address("10.0.0.1"),
+           "leasetime": 3  # leasetime for client leases
          }
+
+
+class Lease:
+    def __init__(self):
+        self.addr = IPv4Address("0.0.0.0")
+        self.leasetime = 0
+        self.valid_until = 0
+        self.chaddr = b""
+        self.routers = []
+        self.dns = []
+
+    def renew(self, now):
+        self.valid_until = now + 2 * self.leasetime
+
+    def isValid(self, now):
+        return self.valid_until > now
+
+    def __repr__(self):
+        return "Lease(addr=%s, chaddr=%s, valid_until=%i)" % (self.addr, binascii.hexlify(self.chaddr).decode("UTF-8"), self.valid_until)
+
 
 class DHCPProtocol:
     def __init__(self, ddhcp, config):
@@ -54,30 +72,92 @@ class DHCPProtocol:
 
     def datagram_received(self, data, addr):
         # TODO verify packet somehow
+        req = dhcp.DHCPPacket()
+        req.deserialize(io.BytesIO(data))
+
+        if req.op != req.BOOTREQUEST:
+            return
+
+        reqtype = next(filter(lambda o: o.__class__ == dhcpoptions.DHCPMessageType, req.options)).type
+
         msg = dhcp.DHCPPacket()
-        msg.deserialize(io.BytesIO(data))
-
-        print(addr, msg)
-
-        msgtype = next(filter(lambda o: o.__class__ == dhcpoptions.DHCPMessageType, msg.options)).type
-
+        msg.xid = req.xid
+        msg.flags = req.flags
+        msg.giaddr = req.giaddr
         msg.op = msg.BOOTREPLY
-        msg.options = []
-        msg.siaddr = IPv4Address("10.0.0.1")
+        msg.chaddr = req.chaddr
+        msg.htype = 1
 
-        if msgtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDISCOVER:
-            msg.yiaddr = IPv4Address("10.0.0.2")
+        now = time.time()
+
+        if reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDISCOVER:
             msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPOFFER))
-            msg.options.append(dhcpoptions.IPAddressLeaseTime(30))
 
+            blocks = self.ddhcp.our_blocks()
+            for block in blocks:
+                block.purge_leases(now)
+
+            blocks = filter(lambda b: b.hosts() - set(b.leases.keys()), blocks)
+
+            # TODO den "besten" Block, nicht irgendeinen nehmen (Fragmentierung vermeiden)
+
+            block = next(blocks)
+
+            addrs = block.hosts() - set(block.leases.keys())
+
+            lease = Lease()
+            lease.addr = addrs.pop()
+            lease.leasetime = self.config["leasetime"]
+            lease.renew(now)
+            lease.chaddr = req.chaddr
+            lease.routers = self.config["routers"]
+            lease.dns = self.config["dns"]
+
+            block.leases[lease.addr] = lease
+
+            msg.yiaddr = lease.addr
+            msg.options.append(dhcpoptions.IPAddressLeaseTime(lease.leasetime))
+
+        elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPREQUEST:
+            try:
+                reqip = next(filter(lambda o: o.__class__ == dhcpoptions.RequestedIPAddress, req.options)).addr
+            except StopIteration:
+                reqip = req.ciaddr
+
+            try:
+                block = self.ddhcp.block_from_ip(reqip)
+                block.purge_leases(now)
+
+                print(block)
+
+                lease = block.leases[reqip]
+
+                if lease.chaddr != req.chaddr:
+                    raise KeyError("MAC address does not match lease")
+
+                lease.renew(now)
+
+                msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPACK))
+                msg.yiaddr = lease.addr
+                msg.options.append(dhcpoptions.IPAddressLeaseTime(lease.leasetime))
+                msg.options.append(dhcpoptions.SubnetMask(self.config["prefixlen"]))
+                msg.options.append(dhcpoptions.RouterOption(lease.routers))
+                msg.options.append(dhcpoptions.DomainNameServerOption(lease.dns))
+
+            except KeyError:
+                msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPNAK))
+
+        else:
+            return
+
+        print(msg)
+
+        if addr[0] == '0.0.0.0' or msg.flags & 1:
             self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
-        elif msgtype == dhcpoptions.DHCPMessageType.TYPES.DHCPREQUEST:
-            msg.yiaddr = IPv4Address("10.0.0.2")
-            msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPACK))
-            msg.options.append(dhcpoptions.IPAddressLeaseTime(30))
+        else:
+            self.transport.sendto(msg.serialize(), addr)
 
-            self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
-
+# eigene Blöcke durchsuchen, einen davon auswählen
 # freie IP suchen, als reserviert markieren
 # offer senden
 # bei request nachschauen und ack senden

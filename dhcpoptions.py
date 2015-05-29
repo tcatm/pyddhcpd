@@ -1,12 +1,13 @@
 import struct
 from enum import Enum
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Network
+
 
 class SubnetMask:
     CODE = 1
 
-    def __init__(self):
-        self.prefixlen = 0
+    def __init__(self, prefixlen=0):
+        self.prefixlen = prefixlen
 
     def deserialize(self, len, f):
         self.prefixlen = IPv4Network("0.0.0.0/" + str(IPv4Address(f.read(len)))).prefixlen
@@ -20,6 +21,70 @@ class SubnetMask:
 
     def __repr__(self):
         return "SubnetMask(%i)" % self.prefixlen
+
+
+class RouterOption:
+    CODE = 3
+
+    def __init__(self, addrs=[]):
+        self.addrs = addrs
+
+    def deserialize(self, len, f):
+        self.addrs = []
+        for i in range(0, int(len / 4)):
+            self.addrs.append(IPv4Address(f.read(4)))
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("!B", self.CODE)
+        r += struct.pack("!B", len(self.addrs) * 4)
+        r += b"".join(map(lambda a: a.packed, self.addrs))
+        return r
+
+    def __repr__(self):
+        return "RouterOption(%s)" % (", ".join(map(repr, self.addrs)))
+
+
+class DomainNameServerOption:
+    CODE = 6
+
+    def __init__(self, addrs=[]):
+        self.addrs = addrs
+
+    def deserialize(self, len, f):
+        self.addrs = []
+        for i in range(0, int(len / 4)):
+            self.addrs.append(IPv4Address(f.read(4)))
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("!B", self.CODE)
+        r += struct.pack("!B", len(self.addrs) * 4)
+        r += b"".join(map(lambda a: a.packed, self.addrs))
+        return r
+
+    def __repr__(self):
+        return "DomainNameServerOption(%s)" % (", ".join(map(repr, self.addrs)))
+
+
+class RequestedIPAddress:
+    CODE = 50
+
+    def __init__(self):
+        self.addr = IPv4Address("0.0.0.0")
+
+    def deserialize(self, len, f):
+        self.addr = IPv4Address(f.read(len))
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("!B", self.CODE)
+        r += struct.pack("!B", 4)
+        r += self.addr.packed
+        return r
+
+    def __repr__(self):
+        return "RequestedIPAddress(%s)" % str(self.addr)
 
 
 class IPAddressLeaseTime:
@@ -105,6 +170,9 @@ class ParameterRequestList:
 
 optionmap = {
     1: SubnetMask,
+    3: RouterOption,
+    6: DomainNameServerOption,
+    50: RequestedIPAddress,
     51: IPAddressLeaseTime,
     53: DHCPMessageType,
     54: ServerIdentifier,

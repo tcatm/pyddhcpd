@@ -3,6 +3,7 @@ import random
 import time
 from math import log
 from enum import Enum
+from ipaddress import IPv4Network
 
 import messages
 
@@ -27,10 +28,16 @@ class Block:
         self.state = BlockState.FREE
         self.valid_until = 0
         self.addr = None
-        self.clients = dict()
+        self.leases = dict()
+
+    def hosts(self):
+        return set(self.subnet.hosts()) | set([self.subnet.network_address, self.subnet.broadcast_address])
+
+    def purge_leases(self, now):
+        self.leases = dict(map(lambda l: (l.addr, l), filter(lambda l: l.isValid(now), self.leases.values())))
 
     def __repr__(self):
-        return "Block(%s, index=%i, state=%s, valid=%i, addr=%s)"  % (self.subnet, self.index, self.state, min(0, self.valid_until - time.time()), self.addr)
+        return "Block(%s, index=%i, state=%s, valid=%i, addr=%s, leases=[%s])"  % (self.subnet, self.index, self.state, min(0, self.valid_until - time.time()), self.addr, ", ".join(map(repr, self.leases.values())))
 
 
 class DDHCP:
@@ -44,7 +51,6 @@ class DDHCP:
 
         self.blocks = list(map(Block, subnets))
 
-        # TODO refactor this!
         for i, block in enumerate(self.blocks):
             block.index = i
 
@@ -52,6 +58,16 @@ class DDHCP:
             self.blocks[i].state = BlockState.BLOCKED
 
         self.own_blocks = dict()
+
+    def block_from_ip(self, addr):
+        """Given an IPv4Address return the block (or KeyError exception)"""
+        net = IPv4Network(addr)
+
+        for block in self.blocks:
+            if block.subnet.overlaps(net):
+                return block
+
+        raise KeyError("Address not managed by any block")
 
     def dump_blocks(self):
         return
@@ -78,15 +94,15 @@ class DDHCP:
     def set_protocol(self, protocol):
         self.protocol = protocol
 
-    def freeBlocks(self):
-        return filter(lambda d: d.state == BlockState.FREE, self.blocks)
+    def free_blocks(self):
+        return list(filter(lambda d: d.state == BlockState.FREE, self.blocks))
 
-    def ourBlocks(self):
-        return filter(lambda d: d.state == BlockState.OURS, self.blocks)
+    def our_blocks(self):
+        return list(filter(lambda d: d.state == BlockState.OURS, self.blocks))
 
     def randomFreeBlock(self):
         try:
-            return random.choice(list(self.freeBlocks()))
+            return random.choice(self.free_blocks())
         except IndexError:
             return None
 
@@ -108,12 +124,10 @@ class DDHCP:
             block.reset()
         elif block.state == BlockState.OURS:
             block.reset()
-            # TODO remove from own_blocks
 
         self.block_changed()
 
     def block_changed(self):
-        # TODO schedule timeouts for events
         self.dump_blocks()
 
         now = time.time()
@@ -132,7 +146,8 @@ class DDHCP:
             self.loop.create_task(self.schedule_block(block, now))
 
     def update_claims(self):
-        blocks = self.ourBlocks()
+        # TODO don't update all free blocks. only keep one
+        blocks = self.our_blocks()
 
         msgs = []
 
@@ -226,8 +241,6 @@ class DDHCP:
             # TODO maybe sent all claimed blocks?
             msg = messages.UpdateClaim()
             msg.block_index = block.index
-
-            # TODO set timeout to real timeout
             msg.timeout = self.blocktimeout
 
             self.protocol.msgto(msg, addr)
