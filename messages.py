@@ -1,5 +1,8 @@
+import binascii
 import struct
 from ipaddress import IPv4Address, IPv4Network, IPv4Address
+
+from lease import Lease
 
 class UpdateClaim:
     """Claim a block"""
@@ -8,18 +11,15 @@ class UpdateClaim:
     def __init__(self):
         self.block_index = 0
         self.timeout = 0
-        self.reserved = 0
 
     def deserialize(self, f):
         self.block_index = struct.unpack("!I", f.read(4))[0]
         self.timeout = struct.unpack("!H", f.read(2))[0]
-        self.reserved = struct.unpack("!H", f.read(2))[0]
 
     def serialize(self):
         r = b""
         r += struct.pack("!I", self.block_index)
         r += struct.pack("!H", self.timeout)
-        r += struct.pack("!H", self.reserved)
         return r
 
     def __repr__(self):
@@ -45,9 +45,51 @@ class InquireBlock:
         return "InquireBlock(block=%i)" % (self.block_index)
 
 
+class RenewLease:
+    """Ask for a renewed lease."""
+    command = 16
+
+    def __init__(self, addr=IPv4Address("0.0.0.0"), chaddr=b""):
+        self.addr = addr
+        self.chaddr = chaddr
+
+    def deserialize(self, f):
+        self.addr = IPv4Address(f.read(4))
+        self.chaddr = f.read(6)
+
+    def serialize(self):
+        r = b""
+        r += self.addr.packed
+        r += struct.pack("!6s", self.chaddr)
+        return r
+
+    def __repr__(self):
+        return "RenewLease(addr=%s, chaddr=%s)" % (str(self.addr), binascii.hexlify(self.chaddr).decode("UTF-8"))
+
+
+class LeaseNAK:
+    """Deny renewal of lease."""
+    command = 18
+
+    def __init__(self, addr=IPv4Address("0.0.0.0")):
+        self.addr = addr
+
+    def deserialize(self, f):
+        self.addr = IPv4Address(f.read(4))
+
+    def serialize(self):
+        return self.addr.packed
+
+    def __repr__(self):
+        return "LeaseNAK(addr=%s)" % (str(self.addr))
+
+
 msgmap = {
     1: UpdateClaim,
-    2: InquireBlock
+    2: InquireBlock,
+    16: RenewLease,
+    17: Lease,
+    18: LeaseNAK
 }
 
 

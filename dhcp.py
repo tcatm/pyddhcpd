@@ -4,6 +4,7 @@ from ipaddress import IPv4Address
 
 import dhcpoptions
 
+
 class DHCPPacket:
     BOOTREQUEST = 1
     BOOTREPLY = 2

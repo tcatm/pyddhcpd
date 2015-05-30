@@ -12,46 +12,42 @@ import io
 
 import messages
 from protocol import DDHCPProtocol
-from ddhcp import DDHCP
+from ddhcp import DDHCP, BlockState
+from lease import Lease
 import dhcp
 import dhcpoptions
 
 from config import config
 
+# TODO update_lease muss irgendwie extrahiert werden
 # TODO brauchen wir TENTATIVE überhaupt?
-# TODO Konfliktauflösug
+# TODO irgendwann mal einen neuen Block claimen. Wann eigentlich?
+# TODO config parameter n freie blöcke mindestens halten
+# TODO Konfliktauflösug. Leases übermitteln
 # TODO REQUEST forwarding
 # TODO block_index may be outside permittable range
 # TODO Split large packets automatically?
-
-
-class Lease:
-    def __init__(self):
-        self.addr = IPv4Address("0.0.0.0")
-        self.leasetime = 0
-        self.valid_until = 0
-        self.chaddr = b""
-        self.routers = []
-        self.dns = []
-
-    def renew(self, now):
-        self.valid_until = now + 2 * self.leasetime
-
-    def isValid(self, now):
-        return self.valid_until > now
-
-    def __repr__(self):
-        return "Lease(addr=%s, chaddr=%s, valid_until=%i)" % (self.addr, binascii.hexlify(self.chaddr).decode("UTF-8"), self.valid_until)
+# TODO Block freigeben, wenn alle leases abgelaufen sind
+# TODO DHCPProtocol in eigene Datei. unterverzeichnis dhcp?
 
 
 class DHCPProtocol:
-    def __init__(self, ddhcp, config):
+    def __init__(self, loop, ddhcp, config):
+        self.loop = loop
         self.config = config
         self.ddhcp = ddhcp
 
     def connection_made(self, transport):
         self.transport = transport
         print("Connection made")
+
+    def sendmsg(self, msg, addr):
+        print("ans", msg)
+
+        if addr[0] == '0.0.0.0' or msg.flags & 1:
+            self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
+        else:
+            self.transport.sendto(msg.serialize(), addr)
 
     def datagram_received(self, data, addr):
         # TODO verify packet somehow
@@ -61,7 +57,13 @@ class DHCPProtocol:
         if req.op != req.BOOTREQUEST:
             return
 
+        self.loop.create_task(self.handle_request(req, addr))
+
+    @asyncio.coroutine
+    def handle_request(self, req, addr):
         reqtype = next(filter(lambda o: o.__class__ == dhcpoptions.DHCPMessageType, req.options)).type
+
+        print("req", req)
 
         msg = dhcp.DHCPPacket()
         msg.xid = req.xid
@@ -76,27 +78,10 @@ class DHCPProtocol:
         if reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDISCOVER:
             msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPOFFER))
 
-            blocks = self.ddhcp.our_blocks()
-            for block in blocks:
-                block.purge_leases(now)
-
-            blocks = filter(lambda b: b.hosts() - set(b.leases.keys()), blocks)
-
-            # TODO den "besten" Block, nicht irgendeinen nehmen (Fragmentierung vermeiden)
-
-            block = next(blocks)
-
-            addrs = block.hosts() - set(block.leases.keys())
-
-            lease = Lease()
-            lease.addr = addrs.pop()
-            lease.leasetime = self.config["leasetime"]
-            lease.renew(now)
-            lease.chaddr = req.chaddr
-            lease.routers = self.config["routers"]
-            lease.dns = self.config["dns"]
-
-            block.leases[lease.addr] = lease
+            try:
+                lease = yield from self.ddhcp.get_lease(None, req.chaddr)
+            except KeyError:
+                return
 
             msg.yiaddr = lease.addr
             msg.options.append(dhcpoptions.IPAddressLeaseTime(lease.leasetime))
@@ -108,17 +93,7 @@ class DHCPProtocol:
                 reqip = req.ciaddr
 
             try:
-                block = self.ddhcp.block_from_ip(reqip)
-                block.purge_leases(now)
-
-                print(block)
-
-                lease = block.leases[reqip]
-
-                if lease.chaddr != req.chaddr:
-                    raise KeyError("MAC address does not match lease")
-
-                lease.renew(now)
+                lease = yield from self.ddhcp.get_lease(reqip, req.chaddr)
 
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPACK))
                 msg.yiaddr = lease.addr
@@ -130,15 +105,7 @@ class DHCPProtocol:
             except KeyError:
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPNAK))
 
-        else:
-            return
-
-        print(msg)
-
-        if addr[0] == '0.0.0.0' or msg.flags & 1:
-            self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
-        else:
-            self.transport.sendto(msg.serialize(), addr)
+        self.sendmsg(msg, addr)
 
 
 def main():
@@ -149,12 +116,12 @@ def main():
     # DHCP Socket
 
     def dhcp_factory():
-        return DHCPProtocol(ddhcp, config)
+        return DHCPProtocol(loop, ddhcp, config)
 
-    listen = loop.create_datagram_endpoint(dhcp_factory, family=socket.AF_INET, local_addr=("0.0.0.0", 67))
-    transport, protocol = loop.run_until_complete(listen)
+    dhcplisten = loop.create_datagram_endpoint(dhcp_factory, family=socket.AF_INET, local_addr=("0.0.0.0", 67))
+    dhcptransport, dhcpprotocol = loop.run_until_complete(dhcplisten)
 
-    sock = transport.get_extra_info("socket")
+    sock = dhcptransport.get_extra_info("socket")
 
     sock.setsockopt(socket.SOL_SOCKET, IN.SO_BINDTODEVICE, bytes(config["clientif"] + '\0', "UTF-8"))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -187,6 +154,9 @@ def main():
         loop.run_forever()
     except KeyboardInterrupt:
         pass
+
+    dhcptransport.close()
+    dhcploop.close()
 
     transport.close()
     loop.close()

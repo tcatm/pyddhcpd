@@ -6,6 +6,7 @@ from enum import Enum
 from ipaddress import IPv4Network
 
 import messages
+from lease import Lease
 
 # BlockStates
 #   FREE      - may be claimed after inquiry
@@ -36,12 +37,47 @@ class Block:
     def purge_leases(self, now):
         self.leases = dict(map(lambda l: (l.addr, l), filter(lambda l: l.isValid(now), self.leases.values())))
 
+    def hasFreeAddress(self):
+        return bool(self.hosts() - set(self.leases.keys()))
+
+    def get_lease(self, now, addr, chaddr, f=None):
+        """Gets an existing matching lease or creates a new one if addr is None.
+           Raises KeyError in case of failure."""
+
+        self.purge_leases(now)
+
+        if addr is None:
+            addr = (self.hosts() - set(self.leases.keys())).pop()
+        elif not self.subnet.overlaps(IPv4Network(addr)):
+            raise KeyError("Address not managed by this block")
+
+        try:
+            lease = self.leases[addr]
+
+        except KeyError:
+            lease = Lease()
+            lease.addr = addr
+            lease.chaddr = chaddr
+            self.leases[addr] = lease
+
+            if f:
+                f(now, lease)
+
+        if lease.chaddr != chaddr:
+            raise KeyError("chaddr does not match lease")
+
+        lease.renew(now)
+
+        return lease
+
     def __repr__(self):
         return "Block(%s, index=%i, state=%s, valid=%i, addr=%s, leases=[%s])"  % (self.subnet, self.index, self.state, min(0, self.valid_until - time.time()), self.addr, ", ".join(map(repr, self.leases.values())))
 
 
 class DDHCP:
     def __init__(self, config):
+        # TODO hier etwas aufräumen. config reicht evtl...
+        self.config = config
         self.id = random.getrandbits(64)
         self.blocktimeout = config["blocktimeout"]
         self.tentativetimeout = config["tentativetimeout"]
@@ -59,6 +95,9 @@ class DDHCP:
 
         self.own_blocks = dict()
 
+        self.lease_queues = dict()
+        self.claim_queues = dict()
+
     def block_from_ip(self, addr):
         """Given an IPv4Address return the block (or KeyError exception)"""
         net = IPv4Network(addr)
@@ -68,6 +107,86 @@ class DDHCP:
                 return block
 
         raise KeyError("Address not managed by any block")
+
+    def prepare_lease(self, now, lease):
+        lease.leasetime = self.config["leasetime"]
+        lease.routers = self.config["routers"]
+        lease.dns = self.config["dns"]
+
+    @asyncio.coroutine
+    def get_lease(self, addr, chaddr):
+        now = time.time()
+
+        if addr == None:
+            # TODO Most likely a discover. select a new, empty block
+            blocks = self.our_blocks()
+            for block in blocks:
+                block.purge_leases(now)
+
+            blocks = filter(lambda b: b.hasFreeAddress(), blocks)
+
+            # TODO den "besten" Block, nicht irgendeinen nehmen (Fragmentierung vermeiden)
+            # TODO this may fail...
+
+            try:
+                block = next(blocks)
+            except StopIteration:
+                # TODO Try to get a block here?
+                raise KeyError("No free block")
+
+            return block.get_lease(now, addr, chaddr, self.prepare_lease)
+
+        else:
+            block = self.block_from_ip(addr)
+
+            if block.state == BlockState.BLOCKED:
+                raise KeyError("Blocked address")
+            elif block.state == BlockState.OURS:
+                return block.get_lease(now, addr, chaddr, self.prepare_lease)
+            elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
+                # ask peer, if it fails mark block as free and try to claim it
+
+                queue = asyncio.Queue(loop=self.loop)
+                self.lease_queues[addr] = queue
+
+                msg = messages.RenewLease(addr, chaddr)
+                self.protocol.msgto(msg, block.addr)
+
+                try:
+                    return (yield from asyncio.wait_for(queue.get(), timeout=3, loop=self.loop))
+                except asyncio.TimeoutError:
+                    # TODO -> Inquiry
+                    block.reset()
+                finally:
+                    del self.lease_queues[addr]
+
+            # This block is now free
+            # Try to claim it. If someone else claims it try one more time to get a lease from him.
+            # Else: Claim it, assign a new lease.
+            print(block)
+
+            # Only case left: BlockState.FREE
+            # try to claim block, then get a lease
+            # oberen if-teil refactoren?
+            # alles zur coroutine machen?
+
+
+        raise KeyError("TODO")
+# forward request to peer. returns lease
+# ein paket RenewLease
+# antwortpaket Lease
+# antwort anhand IP zuordnen
+
+# peer per unicast erreichen
+# timeout von X sekunden
+# fehlschlag: block inquiry, 3x, dann nochmal mit neuer adresse versuchen
+# falls inquiry fehlschlägt: block claimen, IP vergeben
+
+# wir brauchen hier also: antworten auf RenewLease Pakete
+# antworten auf UpdateClaim (anhand des Blocks)
+
+# danach diese funktion refactoren
+
 
     def dump_blocks(self):
         blocks = ""
@@ -111,9 +230,15 @@ class DDHCP:
         timeout = block.valid_until - now
 
         yield from asyncio.sleep(timeout)
+
+        if not block.scheduled:
+            return
+
         block.scheduled = False
 
         now = time.time()
+        # TODO when OURS und keine leases, ggf. freigeben (sofern wir noch n Blöcke behalten werden)
+        block.purge_leases(now)
 
         if block.valid_until - now > 0:
             return
@@ -229,9 +354,13 @@ class DDHCP:
 
 
         block.reset()
-        block.state = BlockState.CLAIMED
-        block.addr = addr
-        block.valid_until = time.time() + msg.timeout
+
+        # msg.timeout == 0 frees a block
+        if msg.timeout > 0:
+            block.state = BlockState.CLAIMED
+            block.addr = addr
+            block.valid_until = time.time() + msg.timeout
+
         self.block_changed()
 
     def handle_InquireBlock(self, msg, node, addr):
@@ -249,4 +378,28 @@ class DDHCP:
             block.state = BlockState.TENTATIVE
             block.valid_until = time.time() + self.tentativetimeout
 
+    def handle_RenewLease(self, msg, node, addr):
+        now = time.time()
 
+        print("Renewing lease", node, msg)
+
+        try:
+            block = self.block_from_ip(msg.addr)
+
+            if block.state == BlockState.OURS:
+                lease = block.get_lease(now, msg.addr, msg.chaddr, self.prepare_lease)
+                self.protocol.msgto(lease, addr)
+
+        except KeyError:
+            pass
+
+    def handle_Lease(self, msg, node, addr):
+        try:
+            queue = self.lease_queues[msg.addr]
+            self.loop.create_task(queue.put(msg))
+        except KeyError:
+            pass
+
+    def handle_LeaseNAK(self, msg, node, addr):
+        # queue!
+        print(msg)
