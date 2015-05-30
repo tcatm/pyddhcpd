@@ -96,7 +96,6 @@ class DDHCP:
         self.own_blocks = dict()
 
         self.lease_queues = dict()
-        self.claim_queues = dict()
 
     def block_from_ip(self, addr):
         """Given an IPv4Address return the block (or KeyError exception)"""
@@ -114,10 +113,32 @@ class DDHCP:
         lease.dns = self.config["dns"]
 
     @asyncio.coroutine
+    def get_lease_from_peer(self, addr, chaddr, peer):
+        queue = asyncio.Queue(loop=self.loop)
+        self.lease_queues[addr] = queue
+
+        msg = messages.RenewLease(addr, chaddr)
+        self.protocol.msgto(msg, peer)
+
+        try:
+            lease = yield from asyncio.wait_for(queue.get(), timeout=3, loop=self.loop)
+
+            if lease is None:
+                raise KeyError("LeaseNAΚ from peer")
+
+            return lease
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            del self.lease_queues[addr]
+
+    @asyncio.coroutine
     def get_lease(self, addr, chaddr):
         now = time.time()
 
+        # TODO Diese Verzweigung schon in DHCPPRotocol machen? Discover vs request
         if addr == None:
+
             # TODO Most likely a discover. select a new, empty block
             blocks = self.our_blocks()
             for block in blocks:
@@ -144,49 +165,27 @@ class DDHCP:
             elif block.state == BlockState.OURS:
                 return block.get_lease(now, addr, chaddr, self.prepare_lease)
             elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
-                # ask peer, if it fails mark block as free and try to claim it
+                lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
 
-                queue = asyncio.Queue(loop=self.loop)
-                self.lease_queues[addr] = queue
-
-                msg = messages.RenewLease(addr, chaddr)
-                self.protocol.msgto(msg, block.addr)
-
-                try:
-                    return (yield from asyncio.wait_for(queue.get(), timeout=3, loop=self.loop))
-                except asyncio.TimeoutError:
-                    # TODO -> Inquiry
+                if lease:
+                    return lease
+                else:
                     block.reset()
-                finally:
-                    del self.lease_queues[addr]
 
-            # This block is now free
-            # Try to claim it. If someone else claims it try one more time to get a lease from him.
-            # Else: Claim it, assign a new lease.
             print(block)
 
-            # Only case left: BlockState.FREE
-            # try to claim block, then get a lease
-            # oberen if-teil refactoren?
-            # alles zur coroutine machen?
+            result = yield from self.claimBlock(block)
+            if result:
+                # This is block is now managed by us.
+                return block.get_lease(now, addr, chaddr, self.prepare_lease)
 
+            # Try to reach peer again (addr might have changed)
+            lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
 
-        raise KeyError("TODO")
-# forward request to peer. returns lease
-# ein paket RenewLease
-# antwortpaket Lease
-# antwort anhand IP zuordnen
+            if lease:
+                return lease
 
-# peer per unicast erreichen
-# timeout von X sekunden
-# fehlschlag: block inquiry, 3x, dann nochmal mit neuer adresse versuchen
-# falls inquiry fehlschlägt: block claimen, IP vergeben
-
-# wir brauchen hier also: antworten auf RenewLease Pakete
-# antworten auf UpdateClaim (anhand des Blocks)
-
-# danach diese funktion refactoren
-
+            raise KeyError("Unable to reach peer")
 
     def dump_blocks(self):
         blocks = ""
@@ -381,14 +380,15 @@ class DDHCP:
     def handle_RenewLease(self, msg, node, addr):
         now = time.time()
 
-        print("Renewing lease", node, msg)
-
         try:
             block = self.block_from_ip(msg.addr)
 
             if block.state == BlockState.OURS:
-                lease = block.get_lease(now, msg.addr, msg.chaddr, self.prepare_lease)
-                self.protocol.msgto(lease, addr)
+                try:
+                    lease = block.get_lease(now, msg.addr, msg.chaddr, self.prepare_lease)
+                    self.protocol.msgto(lease, addr)
+                except KeyError:
+                    self.protocol.msgto(messages.LeaseNAK(msg.addr), addr)
 
         except KeyError:
             pass
@@ -401,5 +401,8 @@ class DDHCP:
             pass
 
     def handle_LeaseNAK(self, msg, node, addr):
-        # queue!
-        print(msg)
+        try:
+            queue = self.lease_queues[msg.addr]
+            self.loop.create_task(queue.put(None))
+        except KeyError:
+            pass

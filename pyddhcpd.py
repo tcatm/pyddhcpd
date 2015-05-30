@@ -19,12 +19,11 @@ import dhcpoptions
 
 from config import config
 
-# TODO update_lease muss irgendwie extrahiert werden
 # TODO brauchen wir TENTATIVE überhaupt?
 # TODO irgendwann mal einen neuen Block claimen. Wann eigentlich?
 # TODO config parameter n freie blöcke mindestens halten
 # TODO Konfliktauflösug. Leases übermitteln
-# TODO REQUEST forwarding
+# TODΩ Konflikt: nicht nur id sondern auch anzahl der vergebenen IPs vergleichen → n IPs übermitteln
 # TODO block_index may be outside permittable range
 # TODO Split large packets automatically?
 # TODO Block freigeben, wenn alle leases abgelaufen sind
