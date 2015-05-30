@@ -19,21 +19,17 @@ import dhcpoptions
 
 from config import config
 
-# TODO brauchen wir TENTATIVE überhaupt?
-# TODO irgendwann mal einen neuen Block claimen. Wann eigentlich?
-# TODO config parameter n freie blöcke mindestens halten
 # TODO Konfliktauflösug. Leases übermitteln
-# TODΩ Konflikt: nicht nur id sondern auch anzahl der vergebenen IPs vergleichen → n IPs übermitteln
 # TODO block_index may be outside permittable range
 # TODO Split large packets automatically?
-# TODO Block freigeben, wenn alle leases abgelaufen sind
 # TODO DHCPProtocol in eigene Datei. unterverzeichnis dhcp?
+# TODO handle DHCPRELEASE, DHCPDECLINE (adresse blockieren?)
+# TODO free all blocks on exit
 
 
 class DHCPProtocol:
-    def __init__(self, loop, ddhcp, config):
+    def __init__(self, loop, ddhcp):
         self.loop = loop
-        self.config = config
         self.ddhcp = ddhcp
 
     def connection_made(self, transport):
@@ -78,7 +74,7 @@ class DHCPProtocol:
             msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPOFFER))
 
             try:
-                lease = yield from self.ddhcp.get_lease(None, req.chaddr)
+                lease = yield from self.ddhcp.get_new_lease(req.chaddr)
             except KeyError:
                 return
 
@@ -97,7 +93,7 @@ class DHCPProtocol:
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPACK))
                 msg.yiaddr = lease.addr
                 msg.options.append(dhcpoptions.IPAddressLeaseTime(lease.leasetime))
-                msg.options.append(dhcpoptions.SubnetMask(self.config["prefixlen"]))
+                msg.options.append(dhcpoptions.SubnetMask(self.ddhcp.config["prefixlen"]))
                 msg.options.append(dhcpoptions.RouterOption(lease.routers))
                 msg.options.append(dhcpoptions.DomainNameServerOption(lease.dns))
 
@@ -115,7 +111,7 @@ def main():
     # DHCP Socket
 
     def dhcp_factory():
-        return DHCPProtocol(loop, ddhcp, config)
+        return DHCPProtocol(loop, ddhcp)
 
     dhcplisten = loop.create_datagram_endpoint(dhcp_factory, family=socket.AF_INET, local_addr=("0.0.0.0", 67))
     dhcptransport, dhcpprotocol = loop.run_until_complete(dhcplisten)
@@ -155,8 +151,6 @@ def main():
         pass
 
     dhcptransport.close()
-    dhcploop.close()
-
     transport.close()
     loop.close()
 

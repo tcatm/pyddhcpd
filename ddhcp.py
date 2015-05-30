@@ -1,7 +1,7 @@
 import asyncio
 import random
 import time
-from math import log
+from math import log, ceil, floor
 from enum import Enum
 from ipaddress import IPv4Network
 
@@ -25,11 +25,18 @@ class Block:
         self.reset()
 
     def reset(self):
-        self.scheduled = False
         self.state = BlockState.FREE
         self.valid_until = 0
         self.addr = None
         self.leases = dict()
+
+    def reset_if_due(self, now):
+        if self.state not in (BlockState.FREE, BlockState.BLOCKED)  and self.valid_until - now < 0:
+            self.reset()
+
+    @property
+    def usage(self):
+        return len(self.leases)
 
     def hosts(self):
         return set(self.subnet.hosts()) | set([self.subnet.network_address, self.subnet.broadcast_address])
@@ -43,8 +50,6 @@ class Block:
     def get_lease(self, now, addr, chaddr, f=None):
         """Gets an existing matching lease or creates a new one if addr is None.
            Raises KeyError in case of failure."""
-
-        self.purge_leases(now)
 
         if addr is None:
             addr = (self.hosts() - set(self.leases.keys())).pop()
@@ -71,7 +76,17 @@ class Block:
         return lease
 
     def __repr__(self):
-        return "Block(%s, index=%i, state=%s, valid=%i, addr=%s, leases=[%s])"  % (self.subnet, self.index, self.state, min(0, self.valid_until - time.time()), self.addr, ", ".join(map(repr, self.leases.values())))
+        return "Block(%s, index=%i, state=%s, valid_until=%i, addr=%s, leases=[%s])"  % (self.subnet, self.index, self.state, self.valid_until, self.addr, ", ".join(map(repr, self.leases.values())))
+
+
+def wrap_housekeeping(f):
+    def inner(self, *args):
+        try:
+            return f(self, *args)
+        finally:
+            self.loop.create_task(self.housekeeping())
+
+    return inner
 
 
 class DDHCP:
@@ -79,8 +94,6 @@ class DDHCP:
         # TODO hier etwas aufräumen. config reicht evtl...
         self.config = config
         self.id = random.getrandbits(64)
-        self.blocktimeout = config["blocktimeout"]
-        self.tentativetimeout = config["tentativetimeout"]
         nAddresses = config["prefix"].num_addresses
         prefixDiff = int(32 - log(config["blocksize"], 2) - config["prefix"].prefixlen)
         subnets = config["prefix"].subnets(prefixlen_diff=prefixDiff)
@@ -96,6 +109,9 @@ class DDHCP:
         self.own_blocks = dict()
 
         self.lease_queues = dict()
+
+        self.housekeeping_lock = asyncio.Lock()
+        self.housekeeping_call = None
 
     def block_from_ip(self, addr):
         """Given an IPv4Address return the block (or KeyError exception)"""
@@ -133,59 +149,56 @@ class DDHCP:
             del self.lease_queues[addr]
 
     @asyncio.coroutine
-    def get_lease(self, addr, chaddr):
+    @wrap_housekeeping
+    def get_new_lease(self, chaddr):
         now = time.time()
 
-        # TODO Diese Verzweigung schon in DHCPPRotocol machen? Discover vs request
-        if addr == None:
+        blocks = self.our_blocks()
+        for block in blocks:
+            block.purge_leases(now)
 
-            # TODO Most likely a discover. select a new, empty block
-            blocks = self.our_blocks()
-            for block in blocks:
-                block.purge_leases(now)
+        blocks = filter(lambda b: b.hasFreeAddress(), blocks)
 
-            blocks = filter(lambda b: b.hasFreeAddress(), blocks)
+        # TODO den "besten" Block, nicht irgendeinen nehmen (Fragmentierung vermeiden)
 
-            # TODO den "besten" Block, nicht irgendeinen nehmen (Fragmentierung vermeiden)
-            # TODO this may fail...
+        try:
+            block = next(blocks)
+        except StopIteration:
+            # TODO Try to get a block here?
+            raise KeyError("No free block")
 
-            try:
-                block = next(blocks)
-            except StopIteration:
-                # TODO Try to get a block here?
-                raise KeyError("No free block")
+        return block.get_lease(now, None, chaddr, self.prepare_lease)
 
+    @asyncio.coroutine
+    @wrap_housekeeping
+    def get_lease(self, addr, chaddr):
+        now = time.time()
+        block = self.block_from_ip(addr)
+
+        if block.state == BlockState.BLOCKED:
+            raise KeyError("Blocked address")
+        elif block.state == BlockState.OURS:
             return block.get_lease(now, addr, chaddr, self.prepare_lease)
-
-        else:
-            block = self.block_from_ip(addr)
-
-            if block.state == BlockState.BLOCKED:
-                raise KeyError("Blocked address")
-            elif block.state == BlockState.OURS:
-                return block.get_lease(now, addr, chaddr, self.prepare_lease)
-            elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
-                lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
-
-                if lease:
-                    return lease
-                else:
-                    block.reset()
-
-            print(block)
-
-            result = yield from self.claimBlock(block)
-            if result:
-                # This is block is now managed by us.
-                return block.get_lease(now, addr, chaddr, self.prepare_lease)
-
-            # Try to reach peer again (addr might have changed)
+        elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
             lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
 
             if lease:
                 return lease
+            else:
+                block.reset()
 
-            raise KeyError("Unable to reach peer")
+        result = yield from self.claim_block(block)
+        if result:
+            # This is block is now managed by us.
+            return block.get_lease(now, addr, chaddr, self.prepare_lease)
+
+        # Try to reach peer again (addr might have changed)
+        lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
+
+        if lease:
+            return lease
+
+        raise KeyError("Unable to reach peer")
 
     def dump_blocks(self):
         blocks = ""
@@ -224,53 +237,7 @@ class DDHCP:
         except IndexError:
             return None
 
-    @asyncio.coroutine
-    def schedule_block(self, block, now):
-        timeout = block.valid_until - now
-
-        yield from asyncio.sleep(timeout)
-
-        if not block.scheduled:
-            return
-
-        block.scheduled = False
-
-        now = time.time()
-        # TODO when OURS und keine leases, ggf. freigeben (sofern wir noch n Blöcke behalten werden)
-        block.purge_leases(now)
-
-        if block.valid_until - now > 0:
-            return
-
-        if block.state == BlockState.TENTATIVE:
-            block.reset()
-        elif block.state == BlockState.CLAIMED:
-            block.reset()
-        elif block.state == BlockState.OURS:
-            block.reset()
-
-        self.block_changed()
-
-    def block_changed(self):
-        self.dump_blocks()
-
-        now = time.time()
-
-        due_blocks = filter(lambda d: d.valid_until > 0, self.blocks)
-        due_blocks = sorted(due_blocks, key=lambda d: d.valid_until)
-
-        if len(due_blocks) == 0:
-            return
-
-        for block in due_blocks:
-            if block.scheduled:
-                continue
-
-            block.scheduled = True
-            self.loop.create_task(self.schedule_block(block, now))
-
     def update_claims(self):
-        # TODO don't update all free blocks. only keep one
         blocks = self.our_blocks()
 
         msgs = []
@@ -280,16 +247,21 @@ class DDHCP:
         for block in blocks:
             msg = messages.UpdateClaim()
             msg.block_index = block.index
-            msg.timeout = self.blocktimeout
-            block.valid_until = now + self.blocktimeout
+            msg.timeout = int(block.valid_until - now)
+            msg.usage = block.usage
+
+            if msg.timeout < 0:
+                continue
+
             msgs.append(msg)
+            print(msg)
 
         self.protocol.msgsto_group(msgs)
 
     @asyncio.coroutine
     def update_claims_task(self):
         while True:
-            yield from asyncio.sleep(15)
+            yield from asyncio.sleep(self.config["claiminterval"])
             self.update_claims()
 
     @asyncio.coroutine
@@ -298,20 +270,104 @@ class DDHCP:
 
         self.loop.create_task(self.update_claims_task())
 
-        # TODO add a random delay here to avoid congestion
+        yield from self.housekeeping()
 
-        for x in range(0, 10):
-            block = self.randomFreeBlock()
-            yield from asyncio.sleep(1)
-
-            if block == None:
-                continue
-
-            ret = yield from self.claimBlock(block)
-
+    def schedule_housekeeping(self):
+        self.loop.create_task(self.housekeeping())
 
     @asyncio.coroutine
-    def claimBlock(self, block):
+    def housekeeping(self):
+        self.housekeeping_call = None
+        yield from self.housekeeping_lock.acquire()
+
+        try:
+            print("Housekeeping")
+
+            self.dump_blocks()
+
+            now = time.time()
+
+            for block in self.blocks:
+                block.reset_if_due(now)
+
+            for block in self.our_blocks():
+                block.purge_leases(now)
+
+            our_blocks = self.our_blocks()
+
+            spares = len(our_blocks) * self.config["blocksize"] - sum([b.usage for b in our_blocks]) - self.config["spares"]
+            spare_blocks = abs(spares/self.config["blocksize"])
+
+            print("Spare IP delta:", spares)
+
+            if spares < 0:
+                # too few spares. claim additional blocks
+                yield from self.claim_n_blocks(ceil(spare_blocks))
+
+            elif spares > 0:
+                empty_blocks = list(filter(lambda b: b.usage == 0, our_blocks))
+
+                for block in empty_blocks[0:floor(spare_blocks)]:
+                    block.reset()
+
+                    msg = messages.UpdateClaim()
+                    msg.block_index = block.index
+                    msg.timeout = 0
+                    msg.usage = 0
+
+                    self.protocol.msgto_group(msg)
+
+                    print("Freed", block)
+
+            for block in self.our_blocks():
+                # Update all timeouts of our blocks
+                block.valid_until = now + self.config["blocktimeout"]
+
+
+            timeouts = [now + self.config["blocktimeout"] / 2] # Increase blockleastime early
+            timeouts += [b.valid_until for b in self.blocks]
+            timeouts += [l.valid_until for sublist in [b.leases.values() for b in self.our_blocks()] for l in sublist]
+
+            try:
+                timeout = min(filter(lambda t: t > now, timeouts))
+
+                print("next housekeeping in %i seconds" % (timeout - now))
+
+                if self.housekeeping_call:
+                    self.housekeeping_call.cancel()
+
+                self.housekeeping_call = self.loop.call_later(timeout - now, self.schedule_housekeeping)
+
+            except ValueError:
+                # no timeout due
+                pass
+
+        finally:
+            self.housekeeping_lock.release()
+
+    @asyncio.coroutine
+    def claim_n_blocks(self, n):
+        print("Attempting to claim %i additional blocks." % n)
+
+        for i in range(0, n):
+            yield from self.claim_any_block()
+
+    @asyncio.coroutine
+    def claim_any_block(self):
+        block = self.randomFreeBlock()
+
+        if not block:
+            return None
+
+        result = yield from self.claim_block(block)
+
+        if result:
+            return block
+        else:
+            return None
+
+    @asyncio.coroutine
+    def claim_block(self, block):
         for i in range(0, 3):
             msg = messages.InquireBlock()
             msg.block_index = block.index
@@ -322,18 +378,23 @@ class DDHCP:
             if block.state != BlockState.FREE:
                 return False
 
-        msg = messages.UpdateClaim()
-        msg.block_index = block.index
-        msg.timeout = self.blocktimeout
+        now = time.time()
 
         block.state = BlockState.OURS
-        block.valid_until = time.time() + self.blocktimeout
-        self.block_changed()
+        block.valid_until = now + self.config["blocktimeout"]
+
+        msg = messages.UpdateClaim()
+        msg.block_index = block.index
+        msg.timeout = int(block.valid_until - now)
+        msg.usage = block.usage
 
         self.protocol.msgto_group(msg)
 
+        print("Claimed", block)
+
         return True
 
+    @wrap_housekeeping
     def handle_UpdateClaim(self, msg, node, addr):
         block = self.blocks[msg.block_index]
 
@@ -342,7 +403,7 @@ class DDHCP:
             return
 
         if block.state == BlockState.OURS:
-            dispute_won = self.id < node
+            dispute_won = block.usage > msg.usage or (self.id < node and block.usage == msg.usage)
             print("DISPUTE", "WON" if dispute_won else "LOST", block)
 
             if dispute_won:
@@ -350,7 +411,6 @@ class DDHCP:
 
             # Sicht des Blocks an den Gewinner schicken
             # TODO resolve dispute here (IPs überantworten und sowas)
-
 
         block.reset()
 
@@ -360,22 +420,23 @@ class DDHCP:
             block.addr = addr
             block.valid_until = time.time() + msg.timeout
 
-        self.block_changed()
-
+    @wrap_housekeeping
     def handle_InquireBlock(self, msg, node, addr):
         block = self.blocks[msg.block_index]
+
+        now = time.time()
 
         if block.state == BlockState.OURS:
             # TODO maybe sent all claimed blocks?
             msg = messages.UpdateClaim()
             msg.block_index = block.index
-            msg.timeout = self.blocktimeout
+            msg.timeout = int(block.valid_until - now)
 
             self.protocol.msgto(msg, addr)
 
-        if block.state == BlockState.FREE:
+        if block.state == BlockState.FREE and node < self.id:
             block.state = BlockState.TENTATIVE
-            block.valid_until = time.time() + self.tentativetimeout
+            block.valid_until = now + self.config["tentativetimeout"]
 
     def handle_RenewLease(self, msg, node, addr):
         now = time.time()

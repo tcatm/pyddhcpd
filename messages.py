@@ -11,19 +11,22 @@ class UpdateClaim:
     def __init__(self):
         self.block_index = 0
         self.timeout = 0
+        self.usage = 0
 
     def deserialize(self, f):
         self.block_index = struct.unpack("!I", f.read(4))[0]
         self.timeout = struct.unpack("!H", f.read(2))[0]
+        self.usage = struct.unpack("!B", f.read(1))[0]
 
     def serialize(self):
         r = b""
         r += struct.pack("!I", self.block_index)
         r += struct.pack("!H", self.timeout)
+        r += struct.pack("!B", self.usage)
         return r
 
     def __repr__(self):
-        return "UpdateClaim(block=%i, timeout=%i)" % (self.block_index, self.timeout)
+        return "UpdateClaim(block=%i, timeout=%i, usage=%i)" % (self.block_index, self.timeout, self.usage)
 
 
 class InquireBlock:
