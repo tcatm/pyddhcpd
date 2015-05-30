@@ -87,12 +87,35 @@ class LeaseNAK:
         return "LeaseNAK(addr=%s)" % (str(self.addr))
 
 
+class Release:
+    """Release a lease. There will be no response."""
+    command = 19
+
+    def __init__(self, addr=IPv4Address("0.0.0.0"), chaddr=b""):
+        self.addr = addr
+        self.chaddr = chaddr
+
+    def deserialize(self, f):
+        self.addr = IPv4Address(f.read(4))
+        self.chaddr = f.read(6)
+
+    def serialize(self):
+        r = b""
+        r += self.addr.packed
+        r += struct.pack("!6s", self.chaddr)
+        return r
+
+    def __repr__(self):
+        return "Release(addr=%s, chaddr=%s)" % (str(self.addr), binascii.hexlify(self.chaddr).decode("UTF-8"))
+
+
 msgmap = {
     1: UpdateClaim,
     2: InquireBlock,
     16: RenewLease,
     17: Lease,
-    18: LeaseNAK
+    18: LeaseNAK,
+    19: Release
 }
 
 

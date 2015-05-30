@@ -23,7 +23,7 @@ from config import config
 # TODO block_index may be outside permittable range
 # TODO Split large packets automatically?
 # TODO DHCPProtocol in eigene Datei. unterverzeichnis dhcp?
-# TODO handle DHCPRELEASE, DHCPDECLINE (adresse blockieren?)
+# TODO DHCPDECLINE (adresse blockieren?)
 # TODO free all blocks on exit
 
 
@@ -68,6 +68,8 @@ class DHCPProtocol:
         msg.chaddr = req.chaddr
         msg.htype = 1
 
+        msg.options.append(dhcpoptions.ServerIdentifier(self.ddhcp.config["siaddr"]))
+
         now = time.time()
 
         if reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDISCOVER:
@@ -80,6 +82,8 @@ class DHCPProtocol:
 
             msg.yiaddr = lease.addr
             msg.options.append(dhcpoptions.IPAddressLeaseTime(lease.leasetime))
+
+            self.sendmsg(msg, addr)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPREQUEST:
             try:
@@ -100,8 +104,13 @@ class DHCPProtocol:
             except KeyError:
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPNAK))
 
-        self.sendmsg(msg, addr)
+            self.sendmsg(msg, addr)
 
+        elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPRELEASE:
+            self.ddhcp.release(req.ciaddr, req.chaddr)
+
+        elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDECLINE:
+            print("DECLINE not yet handled")
 
 def main():
     ddhcp = DDHCP(config)

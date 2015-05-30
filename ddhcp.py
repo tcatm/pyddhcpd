@@ -47,6 +47,16 @@ class Block:
     def hasFreeAddress(self):
         return bool(self.hosts() - set(self.leases.keys()))
 
+    def release(self, addr, chaddr):
+        """Release a lease if it exists."""
+
+        try:
+            lease = self.leases[addr]
+            if lease.chaddr == chaddr:
+                del self.leases[addr]
+        except KeyError:
+            pass
+
     def get_lease(self, now, addr, chaddr, f=None):
         """Gets an existing matching lease or creates a new one if addr is None.
            Raises KeyError in case of failure."""
@@ -199,6 +209,19 @@ class DDHCP:
             return lease
 
         raise KeyError("Unable to reach peer")
+
+    @wrap_housekeeping
+    def release(self, addr, chaddr):
+        print("RELEASE", addr, chaddr)
+
+        block = self.block_from_ip(addr)
+
+        if block.state == BlockState.OURS:
+            block.release(addr, chaddr)
+
+        elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
+            msg = messages.Release(addr, chaddr)
+            self.protocol.msgto(msg, block.addr)
 
     def dump_blocks(self):
         blocks = ""
@@ -467,3 +490,10 @@ class DDHCP:
             self.loop.create_task(queue.put(None))
         except KeyError:
             pass
+
+    @wrap_housekeeping
+    def handle_Release(self, msg, node, addr):
+        block = self.block_from_ip(msg.addr)
+
+        if block.state == BlockState.OURS:
+            block.release(msg.addr, msg.chaddr)
