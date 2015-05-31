@@ -58,6 +58,11 @@ class DHCPProtocol:
     def handle_request(self, req, addr):
         reqtype = next(filter(lambda o: o.__class__ == dhcpoptions.DHCPMessageType, req.options)).type
 
+        try:
+            client_id = next(filter(lambda o: o.__class__ == dhcpoptions.ClientIdentifier, req.options)).data
+        except StopIteration:
+            client_id = req.chaddr
+
         print("req", req)
 
         msg = dhcp.DHCPPacket()
@@ -76,12 +81,15 @@ class DHCPProtocol:
             msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPOFFER))
 
             try:
-                lease = yield from self.ddhcp.get_new_lease(req.chaddr)
+                lease = yield from self.ddhcp.get_new_lease(client_id)
             except KeyError:
                 return
 
             msg.yiaddr = lease.addr
             msg.options.append(dhcpoptions.IPAddressLeaseTime(lease.leasetime))
+            msg.options.append(dhcpoptions.SubnetMask(self.ddhcp.config["prefixlen"]))
+            msg.options.append(dhcpoptions.RouterOption(lease.routers))
+            msg.options.append(dhcpoptions.DomainNameServerOption(lease.dns))
 
             self.sendmsg(msg, addr)
 
@@ -92,7 +100,7 @@ class DHCPProtocol:
                 reqip = req.ciaddr
 
             try:
-                lease = yield from self.ddhcp.get_lease(reqip, req.chaddr)
+                lease = yield from self.ddhcp.get_lease(reqip, client_id)
 
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPACK))
                 msg.yiaddr = lease.addr
@@ -107,7 +115,7 @@ class DHCPProtocol:
             self.sendmsg(msg, addr)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPRELEASE:
-            self.ddhcp.release(req.ciaddr, req.chaddr)
+            self.ddhcp.release(req.ciaddr, client_id)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDECLINE:
             print("DECLINE not yet handled")

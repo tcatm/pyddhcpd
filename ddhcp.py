@@ -47,17 +47,17 @@ class Block:
     def hasFreeAddress(self):
         return bool(self.hosts() - set(self.leases.keys()))
 
-    def release(self, addr, chaddr):
+    def release(self, addr, client_id):
         """Release a lease if it exists."""
 
         try:
             lease = self.leases[addr]
-            if lease.chaddr == chaddr:
+            if lease.client_id == client_id:
                 del self.leases[addr]
         except KeyError:
             pass
 
-    def get_lease(self, now, addr, chaddr, f=None):
+    def get_lease(self, now, addr, client_id, f=None):
         """Gets an existing matching lease or creates a new one if addr is None.
            Raises KeyError in case of failure."""
 
@@ -72,14 +72,14 @@ class Block:
         except KeyError:
             lease = Lease()
             lease.addr = addr
-            lease.chaddr = chaddr
+            lease.client_id = client_id
             self.leases[addr] = lease
 
             if f:
                 f(now, lease)
 
-        if lease.chaddr != chaddr:
-            raise KeyError("chaddr does not match lease")
+        if lease.client_id != client_id:
+            raise KeyError("client_id does not match lease")
 
         lease.renew(now)
 
@@ -139,11 +139,11 @@ class DDHCP:
         lease.dns = self.config["dns"]
 
     @asyncio.coroutine
-    def get_lease_from_peer(self, addr, chaddr, peer):
+    def get_lease_from_peer(self, addr, client_id, peer):
         queue = asyncio.Queue(loop=self.loop)
         self.lease_queues[addr] = queue
 
-        msg = messages.RenewLease(addr, chaddr)
+        msg = messages.RenewLease(addr, client_id)
         self.protocol.msgto(msg, peer)
 
         try:
@@ -160,12 +160,17 @@ class DDHCP:
 
     @asyncio.coroutine
     @wrap_housekeeping
-    def get_new_lease(self, chaddr):
+    def get_new_lease(self, client_id):
         now = time.time()
 
         blocks = self.our_blocks()
         for block in blocks:
             block.purge_leases(now)
+
+        # If we already manage a lease for this client_id, return it
+        for lease in [l for sublist in [b.leases.values() for b in self.our_blocks()] for l in sublist]:
+            if lease.client_id == client_id:
+                return lease
 
         blocks = filter(lambda b: b.hasFreeAddress(), blocks)
 
@@ -177,20 +182,20 @@ class DDHCP:
             # TODO Try to get a block here?
             raise KeyError("No free block")
 
-        return block.get_lease(now, None, chaddr, self.prepare_lease)
+        return block.get_lease(now, None, client_id, self.prepare_lease)
 
     @asyncio.coroutine
     @wrap_housekeeping
-    def get_lease(self, addr, chaddr):
+    def get_lease(self, addr, client_id):
         now = time.time()
         block = self.block_from_ip(addr)
 
         if block.state == BlockState.BLOCKED:
             raise KeyError("Blocked address")
         elif block.state == BlockState.OURS:
-            return block.get_lease(now, addr, chaddr, self.prepare_lease)
+            return block.get_lease(now, addr, client_id, self.prepare_lease)
         elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
-            lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
+            lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
 
             if lease:
                 return lease
@@ -200,10 +205,10 @@ class DDHCP:
         result = yield from self.claim_block(block)
         if result:
             # This is block is now managed by us.
-            return block.get_lease(now, addr, chaddr, self.prepare_lease)
+            return block.get_lease(now, addr, client_id, self.prepare_lease)
 
         # Try to reach peer again (addr might have changed)
-        lease = yield from self.get_lease_from_peer(addr, chaddr, block.addr)
+        lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
 
         if lease:
             return lease
@@ -211,16 +216,16 @@ class DDHCP:
         raise KeyError("Unable to reach peer")
 
     @wrap_housekeeping
-    def release(self, addr, chaddr):
-        print("RELEASE", addr, chaddr)
+    def release(self, addr, client_id):
+        print("RELEASE", addr, client_id)
 
         block = self.block_from_ip(addr)
 
         if block.state == BlockState.OURS:
-            block.release(addr, chaddr)
+            block.release(addr, client_id)
 
         elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
-            msg = messages.Release(addr, chaddr)
+            msg = messages.Release(addr, client_id)
             self.protocol.msgto(msg, block.addr)
 
     def dump_blocks(self):
@@ -469,7 +474,7 @@ class DDHCP:
 
             if block.state == BlockState.OURS:
                 try:
-                    lease = block.get_lease(now, msg.addr, msg.chaddr, self.prepare_lease)
+                    lease = block.get_lease(now, msg.addr, msg.client_id, self.prepare_lease)
                     self.protocol.msgto(lease, addr)
                 except KeyError:
                     self.protocol.msgto(messages.LeaseNAK(msg.addr), addr)
@@ -478,6 +483,10 @@ class DDHCP:
             pass
 
     def handle_Lease(self, msg, node, addr):
+        # handle lease for our blocks
+        # add them if they are non-conflicting
+        # schedule a update_claims
+        # @wrap_housekeeping
         try:
             queue = self.lease_queues[msg.addr]
             self.loop.create_task(queue.put(msg))
@@ -496,4 +505,4 @@ class DDHCP:
         block = self.block_from_ip(msg.addr)
 
         if block.state == BlockState.OURS:
-            block.release(msg.addr, msg.chaddr)
+            block.release(msg.addr, msg.client_id)

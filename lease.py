@@ -10,7 +10,7 @@ class Lease:
         self.addr = IPv4Address("0.0.0.0")
         self.leasetime = 0
         self.valid_until = 0
-        self.chaddr = b""
+        self.client_id = b""
         self.routers = []
         self.dns = []
 
@@ -23,7 +23,9 @@ class Lease:
     def deserialize(self, f):
         self.addr = IPv4Address(f.read(4))
         self.leasetime = struct.unpack("!L", f.read(4))[0]
-        self.chaddr = f.read(6)
+
+        idlen = struct.unpack("!B", f.fread(1))[0]
+        self.client_id = f.read(idlen)
 
         n = struct.unpack("!B", f.read(1))[0]
         self.routers = []
@@ -39,7 +41,9 @@ class Lease:
         r = b""
         r += self.addr.packed
         r += struct.pack("!L", self.leasetime)
-        r += struct.pack("!6s", self.chaddr)
+
+        r += struct.pack("!B", len(self.client_id))
+        r += self.client_id
 
         r += struct.pack("!B", len(self.routers))
         r += b"".join(map(lambda r: r.packed, self.routers))
@@ -50,4 +54,4 @@ class Lease:
         return r
 
     def __repr__(self):
-        return "Lease(addr=%s, chaddr=%s, leasetime=%i)" % (self.addr, binascii.hexlify(self.chaddr).decode("UTF-8"), self.leasetime)
+        return "Lease(addr=%s, client_id=%s, leasetime=%i)" % (self.addr, binascii.hexlify(self.client_id).decode("UTF-8"), self.leasetime)

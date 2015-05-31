@@ -52,22 +52,25 @@ class RenewLease:
     """Ask for a renewed lease."""
     command = 16
 
-    def __init__(self, addr=IPv4Address("0.0.0.0"), chaddr=b""):
+    def __init__(self, addr=IPv4Address("0.0.0.0"), client_id=b""):
         self.addr = addr
-        self.chaddr = chaddr
+        self.client_id = client_id
 
     def deserialize(self, f):
         self.addr = IPv4Address(f.read(4))
-        self.chaddr = f.read(6)
+
+        idlen = struct.unpack("!B", f.read(1))[0]
+        self.client_id = f.read(idlen)
 
     def serialize(self):
         r = b""
         r += self.addr.packed
-        r += struct.pack("!6s", self.chaddr)
+        r += struct.pack("!B", len(self.client_id))
+        r += self.client_id
         return r
 
     def __repr__(self):
-        return "RenewLease(addr=%s, chaddr=%s)" % (str(self.addr), binascii.hexlify(self.chaddr).decode("UTF-8"))
+        return "RenewLease(addr=%s, client_id=%s)" % (str(self.addr), binascii.hexlify(self.client_id).decode("UTF-8"))
 
 
 class LeaseNAK:
@@ -91,22 +94,25 @@ class Release:
     """Release a lease. There will be no response."""
     command = 19
 
-    def __init__(self, addr=IPv4Address("0.0.0.0"), chaddr=b""):
+    def __init__(self, addr=IPv4Address("0.0.0.0"), client_id=b""):
         self.addr = addr
-        self.chaddr = chaddr
+        self.client_id = client_id
 
     def deserialize(self, f):
         self.addr = IPv4Address(f.read(4))
-        self.chaddr = f.read(6)
+
+        idlen = struct.unpack("!B", f.read(1))[0]
+        self.client_id = f.read(idlen)
 
     def serialize(self):
         r = b""
         r += self.addr.packed
-        r += struct.pack("!6s", self.chaddr)
+        r += struct.pack("!B", len(self.client_id))
+        r += self.client_id
         return r
 
     def __repr__(self):
-        return "Release(addr=%s, chaddr=%s)" % (str(self.addr), binascii.hexlify(self.chaddr).decode("UTF-8"))
+        return "Release(addr=%s, client_id=%s)" % (str(self.addr), binascii.hexlify(self.client_id).decode("UTF-8"))
 
 
 msgmap = {

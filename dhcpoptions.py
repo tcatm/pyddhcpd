@@ -168,6 +168,27 @@ class ParameterRequestList:
     def __repr__(self):
         return "ParameterRequestList(%s)" % ", ".join(map(str, self.list))
 
+
+class ClientIdentifier:
+    CODE = 61
+
+    def __init__(self):
+        self.data = bytes([0, 0])
+
+    def deserialize(self, len, f):
+        self.data = f.read(len)
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("!B", self.CODE)
+        r += struct.pack("!B", len(self.data))
+        r += self.data
+        return r
+
+    def __repr__(self):
+        return "ClientIdentifier(%s)" % self.data
+
+
 optionmap = {
     1: SubnetMask,
     3: RouterOption,
@@ -176,5 +197,6 @@ optionmap = {
     51: IPAddressLeaseTime,
     53: DHCPMessageType,
     54: ServerIdentifier,
-    55: ParameterRequestList
+    55: ParameterRequestList,
+    61: ClientIdentifier
 }
