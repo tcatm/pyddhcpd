@@ -19,13 +19,6 @@ import dhcpoptions
 
 from config import config
 
-# TODO Konfliktauflösug. Leases übermitteln
-# TODO block_index may be outside permittable range
-# TODO Split large packets automatically?
-# TODO DHCPProtocol in eigene Datei. unterverzeichnis dhcp?
-# TODO DHCPDECLINE (adresse blockieren?)
-# TODO free all blocks on exit
-
 
 class DHCPProtocol:
     def __init__(self, loop, ddhcp):
