@@ -90,9 +90,9 @@ class Block:
 
 
 def wrap_housekeeping(f):
-    def inner(self, *args):
+    def inner(self, *args, **kwargs):
         try:
-            return f(self, *args)
+            return f(self, *args, **kwargs)
         finally:
             self.loop.create_task(self.housekeeping())
 

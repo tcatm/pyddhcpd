@@ -90,7 +90,7 @@ class RequestedIPAddress:
 class IPAddressLeaseTime:
     CODE = 51
 
-    def __init__(self, time):
+    def __init__(self, time=0):
         self.time = time
 
     def deserialize(self, len, f):
