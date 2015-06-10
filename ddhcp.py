@@ -173,8 +173,7 @@ class DDHCP:
                 return lease
 
         blocks = filter(lambda b: b.hasFreeAddress(), blocks)
-
-        # TODO den "besten" Block, nicht irgendeinen nehmen (Fragmentierung vermeiden)
+        blocks = reversed(sorted(blocks, key=lambda b: b.usage))
 
         try:
             block = next(blocks)
