@@ -201,18 +201,20 @@ class DDHCP:
             else:
                 block.reset()
 
-        result = yield from self.claim_block(block)
-        if result:
-            # This is block is now managed by us.
-            return block.get_lease(now, addr, client_id, self.prepare_lease)
+            result = yield from self.claim_block(block)
+            if result:
+                # This is block is now managed by us.
+                return block.get_lease(now, addr, client_id, self.prepare_lease)
 
-        # Try to reach peer again (addr might have changed)
-        lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
+            # Try to reach peer again (addr might have changed)
+            lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
 
-        if lease:
-            return lease
+            if lease:
+                return lease
 
-        raise KeyError("Unable to reach peer")
+            raise KeyError("Unable to reach peer")
+
+        raise KeyError("Block is not managed by anyone")
 
     @wrap_housekeeping
     def release(self, addr, client_id):
