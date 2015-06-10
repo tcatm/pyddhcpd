@@ -24,12 +24,6 @@ class DDHCPProtocol:
 
         return header
 
-    def msgto_group(self, msg):
-        header = self.prepare_header()
-        header.append(msg)
-
-        self.sendto_group(header.serialize())
-
     def msgsto_group(self, msgs):
         header = self.prepare_header()
 
@@ -38,12 +32,6 @@ class DDHCPProtocol:
 
         self.sendto_group(header.serialize())
 
-    def msgto(self, msg, addr):
-        header = self.prepare_header()
-        header.append(msg)
-
-        self.transport.sendto(header.serialize(), addr)
-
     def msgsto(self, msgs, addr):
         header = self.prepare_header()
 
@@ -51,6 +39,12 @@ class DDHCPProtocol:
             header.append(msg)
 
         self.transport.sendto(header.serialize(), addr)
+
+    def msgto(self, msg, addr):
+        self.msgto([msg], addr)
+
+    def msgto_group(self, msg):
+        self.msgsto_group([msg])
 
     def datagram_received(self, data, addr):
         try:
