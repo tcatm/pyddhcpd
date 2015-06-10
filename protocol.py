@@ -55,4 +55,3 @@ class DDHCPProtocol:
 
         for payload in msg.payload:
             method(payload, msg.node, addr)
-

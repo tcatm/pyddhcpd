@@ -24,7 +24,7 @@ class Lease:
         self.addr = IPv4Address(f.read(4))
         self.leasetime = struct.unpack("!L", f.read(4))[0]
 
-        idlen = struct.unpack("!B", f.fread(1))[0]
+        idlen = struct.unpack("!B", f.read(1))[0]
         self.client_id = f.read(idlen)
 
         n = struct.unpack("!B", f.read(1))[0]

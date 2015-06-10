@@ -438,8 +438,8 @@ class DDHCP:
             if dispute_won:
                 return
 
-            # Sicht des Blocks an den Gewinner schicken
-            # TODO resolve dispute here (IPs überantworten und sowas)
+            # Inform winner of all our leases before we reset our block
+            self.protocol.msgsto(block.leases.values(), addr)
 
         block.reset()
 
@@ -483,16 +483,21 @@ class DDHCP:
         except KeyError:
             pass
 
+    @wrap_housekeeping
     def handle_Lease(self, msg, node, addr):
-        # handle lease for our blocks
-        # add them if they are non-conflicting
-        # schedule a update_claims
-        # @wrap_housekeeping
+        now = time.time()
+
         try:
             queue = self.lease_queues[msg.addr]
             self.loop.create_task(queue.put(msg))
         except KeyError:
-            pass
+            # Nobody was expecting the lease
+            block = self.block_from_ip(msg.addr)
+
+            if block.state == BlockState.OURS:
+                if not msg.addr in block.leases:
+                    msg.renew(now)
+                    block.leases[msg.addr] = msg
 
     def handle_LeaseNAK(self, msg, node, addr):
         try:
