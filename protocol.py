@@ -13,9 +13,6 @@ class DDHCPProtocol:
         self.transport = transport
         self.loop.create_task(self.ddhcp.start(self.loop))
 
-    def sendto_group(self, data):
-        self.transport.sendto(data, self.group_addr)
-
     def prepare_header(self):
         header = messages.Header()
         header.prefix = self.config["prefix"]
@@ -24,14 +21,6 @@ class DDHCPProtocol:
 
         return header
 
-    def msgsto_group(self, msgs):
-        header = self.prepare_header()
-
-        for msg in msgs:
-            header.append(msg)
-
-        self.sendto_group(header.serialize())
-
     def msgsto(self, msgs, addr):
         header = self.prepare_header()
 
@@ -39,6 +28,9 @@ class DDHCPProtocol:
             header.append(msg)
 
         self.transport.sendto(header.serialize(), addr)
+
+    def msgsto_group(self, msgs):
+        self.msgsto(msgs, self.group_addr)
 
     def msgto(self, msg, addr):
         self.msgto([msg], addr)
