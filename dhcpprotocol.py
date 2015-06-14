@@ -3,6 +3,7 @@ import io
 import time
 import dhcp
 import dhcpoptions
+import logging
 from lease import Lease
 
 
@@ -13,10 +14,9 @@ class DHCPProtocol:
 
     def connection_made(self, transport):
         self.transport = transport
-        print("Connection made")
 
     def sendmsg(self, msg, addr):
-        print("ans", msg)
+        logging.info("DHCP Response: %s", msg)
 
         if addr[0] == '0.0.0.0' or msg.flags & 1:
             self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
@@ -42,7 +42,7 @@ class DHCPProtocol:
         except StopIteration:
             client_id = req.chaddr
 
-        print("req", req)
+        logging.info("DHCP Request: %s", req)
 
         msg = dhcp.DHCPPacket()
         msg.xid = req.xid
@@ -97,4 +97,4 @@ class DHCPProtocol:
             self.ddhcp.release(req.ciaddr, client_id)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDECLINE:
-            print("DECLINE not yet handled")
+            logging.debug("DECLINE not yet handled")

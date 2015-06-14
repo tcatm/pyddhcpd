@@ -3,6 +3,7 @@
 import asyncio
 import struct
 import socket, IN
+import logging
 
 from protocol import DDHCPProtocol
 from dhcpprotocol import DHCPProtocol
@@ -12,6 +13,12 @@ from config import config
 
 
 def main():
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)-8s %(message)s',
+                        datefmt='%m-%d %H:%M')
+
+    logging.info("START")
+
     ddhcp = DDHCP(config)
     loop = asyncio.get_event_loop()
 

@@ -1,6 +1,8 @@
 import asyncio
 import random
 import time
+import logging
+
 from math import log, ceil, floor
 from enum import Enum
 from ipaddress import IPv4Network
@@ -218,7 +220,7 @@ class DDHCP:
 
     @wrap_housekeeping
     def release(self, addr, client_id):
-        print("RELEASE", addr, client_id)
+        logging.debug("Releasing IP %s for client %s", addr, client_id)
 
         block = self.block_from_ip(addr)
 
@@ -228,28 +230,6 @@ class DDHCP:
         elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
             msg = messages.Release(addr, client_id)
             self.protocol.msgto(msg, block.addr)
-
-    def dump_blocks(self):
-        blocks = ""
-
-        m = { BlockState.FREE:      ".",
-              BlockState.TENTATIVE: "-",
-              BlockState.CLAIMED:   "C",
-              BlockState.OURS:      "o",
-              BlockState.BLOCKED:   "X"
-            }
-
-        for block in self.blocks:
-            blocks += m[block.state]
-
-        print("\nBlocks at", time.time())
-
-        import re
-        for b in re.findall('.{0,80}', blocks):
-            print(b)
-
-        for block in self.blocks:
-            print(block)
 
     def set_protocol(self, protocol):
         self.protocol = protocol
@@ -283,7 +263,6 @@ class DDHCP:
                 continue
 
             msgs.append(msg)
-            print(msg)
 
         self.protocol.msgsto_group(msgs)
 
@@ -310,10 +289,6 @@ class DDHCP:
         yield from self.housekeeping_lock.acquire()
 
         try:
-            print("Housekeeping")
-
-            self.dump_blocks()
-
             now = time.time()
 
             for block in self.blocks:
@@ -326,8 +301,6 @@ class DDHCP:
 
             spares = len(our_blocks) * self.config["blocksize"] - sum([b.usage for b in our_blocks]) - self.config["spares"]
             spare_blocks = abs(spares/self.config["blocksize"])
-
-            print("Spare IP delta:", spares)
 
             if spares < 0:
                 # too few spares. claim additional blocks
@@ -346,7 +319,7 @@ class DDHCP:
 
                     self.protocol.msgto_group(msg)
 
-                    print("Freed", block)
+                    logging.info("Freed block %s", block)
 
             for block in self.our_blocks():
                 # Update all timeouts of our blocks
@@ -359,8 +332,6 @@ class DDHCP:
 
             try:
                 timeout = min(filter(lambda t: t > now, timeouts))
-
-                print("next housekeeping in %i seconds" % (timeout - now))
 
                 if self.housekeeping_call:
                     self.housekeeping_call.cancel()
@@ -376,7 +347,7 @@ class DDHCP:
 
     @asyncio.coroutine
     def claim_n_blocks(self, n):
-        print("Attempting to claim %i additional blocks." % n)
+        logging.info("Attempting to claim %i additional blocks.", n)
 
         for i in range(0, n):
             yield from self.claim_any_block()
@@ -419,7 +390,7 @@ class DDHCP:
 
         self.protocol.msgto_group(msg)
 
-        print("Claimed", block)
+        logging.info("Claimed block %s", block)
 
         return True
 
@@ -428,12 +399,12 @@ class DDHCP:
         block = self.blocks[msg.block_index]
 
         if block.state == BlockState.BLOCKED:
-            print(addr, "is claiming blocked block", block)
+            logging.warning("%s (%s) is claiming blocked block %s", node, addr, block)
             return
 
         if block.state == BlockState.OURS:
             dispute_won = block.usage > msg.usage or (self.id < node and block.usage == msg.usage)
-            print("DISPUTE", "WON" if dispute_won else "LOST", block)
+            logging.info("dispute %s for block %s", "WON" if dispute_won else "LOST", block)
 
             if dispute_won:
                 return
