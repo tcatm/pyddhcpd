@@ -16,8 +16,6 @@ class DHCPProtocol:
         self.transport = transport
 
     def sendmsg(self, msg, addr):
-        logging.info("DHCP Response: %s", msg)
-
         if addr[0] == '0.0.0.0' or msg.flags & 1:
             self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
         else:
@@ -42,8 +40,6 @@ class DHCPProtocol:
         except StopIteration:
             client_id = req.chaddr
 
-        logging.info("DHCP Request: %s", req)
-
         msg = dhcp.DHCPPacket()
         msg.xid = req.xid
         msg.flags = req.flags
@@ -57,6 +53,8 @@ class DHCPProtocol:
         now = time.time()
 
         if reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDISCOVER:
+            logging.info("%s from %s", reqtype.name, client_id)
+
             msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPOFFER))
 
             try:
@@ -72,11 +70,15 @@ class DHCPProtocol:
 
             self.sendmsg(msg, addr)
 
+            logging.info("DHCPOFFER to %s, address %s", client_id, msg.yiaddr)
+
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPREQUEST:
             try:
                 reqip = next(filter(lambda o: o.__class__ == dhcpoptions.RequestedIPAddress, req.options)).addr
             except StopIteration:
                 reqip = req.ciaddr
+
+            logging.info("%s from %s for %s", reqtype.name, client_id, reqip)
 
             try:
                 lease = yield from self.ddhcp.get_lease(reqip, client_id)
@@ -88,13 +90,18 @@ class DHCPProtocol:
                 msg.options.append(dhcpoptions.RouterOption(lease.routers))
                 msg.options.append(dhcpoptions.DomainNameServerOption(lease.dns))
 
+                logging.info("DHCPACK to %s for %s", client_id, msg.yiaddr)
+
             except KeyError:
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPNAK))
+                logging.info("DHCPNAK to %s", client_id)
 
             self.sendmsg(msg, addr)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPRELEASE:
+            logging.info("%s from %s for %s", reqtype.name, client_id, req.ciaddr)
             self.ddhcp.release(req.ciaddr, client_id)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDECLINE:
+            logging.info("%s from %s for %s", reqtype.name, client_id, req.ciaddr)
             logging.debug("DECLINE not yet handled")
