@@ -33,7 +33,7 @@ class DDHCPProtocol:
         self.msgsto(msgs, self.group_addr)
 
     def msgto(self, msg, addr):
-        self.msgto([msg], addr)
+        self.msgsto([msg], addr)
 
     def msgto_group(self, msg):
         self.msgsto_group([msg])
