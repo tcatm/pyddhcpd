@@ -396,7 +396,10 @@ class DDHCP:
 
     @wrap_housekeeping
     def handle_UpdateClaim(self, msg, node, addr):
-        block = self.blocks[msg.block_index]
+        try:
+            block = self.blocks[msg.block_index]
+        except KeyError:
+            return
 
         if block.state == BlockState.BLOCKED:
             logging.warning("%s (%s) is claiming blocked block %s", node, addr, block)
