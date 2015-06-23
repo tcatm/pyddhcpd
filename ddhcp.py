@@ -209,10 +209,11 @@ class DDHCP:
                 return block.get_lease(now, addr, client_id, self.prepare_lease)
 
             # Try to reach peer again (addr might have changed)
-            lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
+            if block.state == BlockState.CLAIMED:
+                lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
 
-            if lease:
-                return lease
+                if lease:
+                    return lease
 
             raise KeyError("Unable to reach peer")
         elif block.state == BlockState.TENTATIVE:
