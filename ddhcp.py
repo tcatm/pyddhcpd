@@ -195,7 +195,7 @@ class DDHCP:
             raise KeyError("Blocked address")
         elif block.state == BlockState.OURS:
             return block.get_lease(now, addr, client_id, self.prepare_lease)
-        elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
+        elif block.state == BlockState.CLAIMED:
             lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
 
             if lease:
@@ -215,6 +215,8 @@ class DDHCP:
                 return lease
 
             raise KeyError("Unable to reach peer")
+        elif block.state == BlockState.TENTATIVE:
+            pass
 
         raise KeyError("Block is not managed by anyone")
 
