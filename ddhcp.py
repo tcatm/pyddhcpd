@@ -227,7 +227,7 @@ class DDHCP:
         if block.state == BlockState.OURS:
             block.release(addr, client_id)
 
-        elif block.state in (BlockState.CLAIMED, BlockState.TENTATIVE):
+        elif block.state == BlockState.CLAIMED:
             msg = messages.Release(addr, client_id)
             self.protocol.msgto(msg, block.addr)
 
