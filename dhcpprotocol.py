@@ -4,22 +4,70 @@ import time
 import dhcp
 import dhcpoptions
 import logging
+import struct
 from lease import Lease
+from ipaddress import IPv4Address
+
+def mkEthernetPacket(dst, src, type, payload):
+    r = struct.pack("!6s6sH", dst, src, type)
+    r += payload
+
+    return r
+
+
+def mkIPv4Packet(dst, src, protocol, payload):
+    def mkHeader(checksum):
+        r = bytes()
+        r += struct.pack("!BB", 4 * 16 + 5, 0) # IPv4 + IHL 5, DSCP / ECN
+        r += struct.pack("!H", 20 + len(payload))
+        r += struct.pack("!HH", 0, 0) # Identification, Flags and Fragmentation
+        r += struct.pack("!B", 255) # TTL
+        r += struct.pack("!BH", protocol, checksum)
+        r += src.packed
+        r += dst.packed
+
+        return r
+
+    def mkChecksum(header):
+        s = sum(struct.unpack("!10H", header))
+
+        return 0xffff ^ ((s & 0xffff) + (s >> 16))
+
+    r = mkHeader(mkChecksum(mkHeader(0)))
+    r += payload
+
+    return r
+
+
+def mkUDPPacket(dst, src, payload):
+    r = struct.pack("!4H", src, dst, len(payload), 0)
+    r += payload
+
+    return r
 
 
 class DHCPProtocol:
-    def __init__(self, loop, ddhcp):
+    def __init__(self, loop, ddhcp, rawsock, servermac):
         self.loop = loop
         self.ddhcp = ddhcp
+        self.rawsock = rawsock
+        self.servermac = servermac
 
     def connection_made(self, transport):
         self.transport = transport
 
-    def sendmsg(self, msg, addr):
-        if addr[0] == '0.0.0.0' or msg.flags & 1:
+    def sendmsg(self, msg):
+        broadcast = msg.flags & 1 or msg.yiaddr == IPv4Address("0.0.0.0")
+
+        if broadcast:
             self.transport.sendto(msg.serialize(), ("<broadcast>", 68))
         else:
-            self.transport.sendto(msg.serialize(), addr)
+            udpPacket = mkUDPPacket(68, 67, msg.serialize())
+            ipPacket = mkIPv4Packet(msg.yiaddr, self.ddhcp.config["siaddr"], 17, udpPacket)
+            ethPacket = mkEthernetPacket(msg.chaddr, self.servermac, 0x0800, ipPacket)
+
+            self.rawsock.send(ethPacket)
+
 
     def datagram_received(self, data, addr):
         # TODO verify packet somehow
@@ -68,7 +116,7 @@ class DHCPProtocol:
             msg.options.append(dhcpoptions.RouterOption(lease.routers))
             msg.options.append(dhcpoptions.DomainNameServerOption(lease.dns))
 
-            self.sendmsg(msg, addr)
+            self.sendmsg(msg)
 
             logging.info("DHCPOFFER to %s, address %s", client_id, msg.yiaddr)
 
@@ -96,7 +144,7 @@ class DHCPProtocol:
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPNAK))
                 logging.info("DHCPNAK to %s", client_id)
 
-            self.sendmsg(msg, addr)
+            self.sendmsg(msg)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPRELEASE:
             logging.info("%s from %s for %s", reqtype.name, client_id, req.ciaddr)

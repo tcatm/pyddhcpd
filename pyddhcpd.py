@@ -4,6 +4,7 @@ import asyncio
 import struct
 import socket, IN
 import logging
+import fcntl
 
 from protocol import DDHCPProtocol
 from dhcpprotocol import DHCPProtocol
@@ -26,7 +27,13 @@ def main():
     # DHCP Socket
 
     def dhcp_factory():
-        return DHCPProtocol(loop, ddhcp)
+        # waw socket for sending unicast replies
+        rawsock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+        rawsock.bind((config["clientif"], 0))
+
+        servermac = fcntl.ioctl(rawsock.fileno(), 0x8927, struct.pack('256s', bytes(config["clientif"], "UTF-8")[:15]))[18:24]
+
+        return DHCPProtocol(loop, ddhcp, rawsock, servermac)
 
     dhcplisten = loop.create_datagram_endpoint(dhcp_factory, family=socket.AF_INET, local_addr=("0.0.0.0", 67))
     dhcptransport, dhcpprotocol = loop.run_until_complete(dhcplisten)
