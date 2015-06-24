@@ -29,7 +29,7 @@ def main():
     def dhcp_factory():
         # waw socket for sending unicast replies
         rawsock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-        rawsock.bind((config["clientif"], 0))
+        rawsock.bind((config["clientif"], 0x0800))
 
         servermac = fcntl.ioctl(rawsock.fileno(), 0x8927, struct.pack('256s', bytes(config["clientif"], "UTF-8")[:15]))[18:24]
 
