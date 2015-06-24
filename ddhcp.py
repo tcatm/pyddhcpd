@@ -59,7 +59,7 @@ class Block:
         except KeyError:
             pass
 
-    def get_lease(self, now, addr, client_id, f=None):
+    def get_lease(self, now, addr, client_id, routers, f=None):
         """Gets an existing matching lease or creates a new one if addr is None.
            Raises KeyError in case of failure."""
 
@@ -75,6 +75,7 @@ class Block:
             lease = Lease()
             lease.addr = addr
             lease.client_id = client_id
+            lease.routers = routers
             self.leases[addr] = lease
 
             if f:
@@ -183,7 +184,7 @@ class DDHCP:
             # TODO Try to get a block here?
             raise KeyError("No free block")
 
-        return block.get_lease(now, None, client_id, self.prepare_lease)
+        return block.get_lease(now, None, client_id, self.config["routers"], self.prepare_lease)
 
     @asyncio.coroutine
     @wrap_housekeeping
@@ -194,7 +195,7 @@ class DDHCP:
         if block.state == BlockState.BLOCKED:
             raise KeyError("Blocked address")
         elif block.state == BlockState.OURS:
-            return block.get_lease(now, addr, client_id, self.prepare_lease)
+            return block.get_lease(now, addr, client_id, self.config["routers"], self.prepare_lease)
         elif block.state == BlockState.CLAIMED:
             lease = yield from self.get_lease_from_peer(addr, client_id, block.addr)
 
@@ -206,7 +207,7 @@ class DDHCP:
             result = yield from self.claim_block(block)
             if result:
                 # This is block is now managed by us.
-                return block.get_lease(now, addr, client_id, self.prepare_lease)
+                return block.get_lease(now, addr, client_id, self.config["routers"], self.prepare_lease)
 
             # Try to reach peer again (addr might have changed)
             if block.state == BlockState.CLAIMED:
@@ -452,7 +453,7 @@ class DDHCP:
 
             if block.state == BlockState.OURS:
                 try:
-                    lease = block.get_lease(now, msg.addr, msg.client_id, self.prepare_lease)
+                    lease = block.get_lease(now, msg.addr, msg.client_id, self.config["routers"], self.prepare_lease)
                     self.protocol.msgto(lease, addr)
                 except KeyError:
                     self.protocol.msgto(messages.LeaseNAK(msg.addr), addr)
