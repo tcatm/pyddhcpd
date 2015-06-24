@@ -5,6 +5,7 @@ import dhcp
 import dhcpoptions
 import logging
 import struct
+from binascii import hexlify
 from lease import Lease
 from ipaddress import IPv4Address
 
@@ -101,7 +102,7 @@ class DHCPProtocol:
         now = time.time()
 
         if reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDISCOVER:
-            logging.info("%s from %s", reqtype.name, client_id)
+            logging.info("%s from %s", reqtype.name, hexlify(client_id).decode("UTF-8"))
 
             msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPOFFER))
 
@@ -118,7 +119,7 @@ class DHCPProtocol:
 
             self.sendmsg(msg)
 
-            logging.info("DHCPOFFER to %s, address %s", client_id, msg.yiaddr)
+            logging.info("DHCPOFFER to %s, address %s", hexlify(client_id).decode("UTF-8"), msg.yiaddr)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPREQUEST:
             try:
@@ -126,7 +127,7 @@ class DHCPProtocol:
             except StopIteration:
                 reqip = req.ciaddr
 
-            logging.info("%s from %s for %s", reqtype.name, client_id, reqip)
+            logging.info("%s from %s for %s", reqtype.name, hexlify(client_id).decode("UTF-8"), reqip)
 
             try:
                 lease = yield from self.ddhcp.get_lease(reqip, client_id)
@@ -138,18 +139,18 @@ class DHCPProtocol:
                 msg.options.append(dhcpoptions.RouterOption(lease.routers))
                 msg.options.append(dhcpoptions.DomainNameServerOption(lease.dns))
 
-                logging.info("DHCPACK to %s for %s", client_id, msg.yiaddr)
+                logging.info("DHCPACK to %s for %s", hexlify(client_id).decode("UTF-8"), msg.yiaddr)
 
             except KeyError:
                 msg.options.append(dhcpoptions.DHCPMessageType(dhcpoptions.DHCPMessageType.TYPES.DHCPNAK))
-                logging.info("DHCPNAK to %s", client_id)
+                logging.info("DHCPNAK to %s", hexlify(client_id).decode("UTF-8"))
 
             self.sendmsg(msg)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPRELEASE:
-            logging.info("%s from %s for %s", reqtype.name, client_id, req.ciaddr)
+            logging.info("%s from %s for %s", reqtype.name, hexlify(client_id).decode("UTF-8"), req.ciaddr)
             self.ddhcp.release(req.ciaddr, client_id)
 
         elif reqtype == dhcpoptions.DHCPMessageType.TYPES.DHCPDECLINE:
-            logging.info("%s from %s for %s", reqtype.name, client_id, req.ciaddr)
+            logging.info("%s from %s for %s", reqtype.name, hexlify(client_id).decode("UTF-8"), req.ciaddr)
             logging.debug("DECLINE not yet handled")
