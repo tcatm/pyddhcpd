@@ -41,7 +41,7 @@ def mkIPv4Packet(dst, src, protocol, payload):
 
 
 def mkUDPPacket(dst, src, payload):
-    r = struct.pack("!4H", src, dst, len(payload), 0)
+    r = struct.pack("!4H", src, dst, 8 + len(payload), 0)
     r += payload
 
     return r
